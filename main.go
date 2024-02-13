@@ -8,7 +8,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -48,9 +47,21 @@ func main() {
 			return
 		}
 
-		// Generar un ID único para la petición
-		id := strings.ToUpper(uuid.New().String())
+		id, ok := request["Detalle"].(map[string]interface{})["CodigoGeneracion"].(string)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "CodigoGeneracion missing or invalid"})
+			return
+		}
+		exists, err := rdb.SIsMember(ctx, "codigosGeneracion", id).Result()
 
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify CodigoGeneracion"})
+			return
+		}
+		if exists {
+			c.JSON(http.StatusOK, gin.H{"message": "Ya existe una invalidación encolada para este DTE", "CodigoGeneracion": id})
+			return
+		}
 		// Crear la estructura EnqueuedRequest
 		enqueuedRequest := EnqueuedRequest{
 			ID:      id,
@@ -111,7 +122,7 @@ func main() {
 	c := cron.New()
 	lockKey := "processLock"
 	lockValue := uuid.New().String()
-	lockExpiration := time.Minute * 10
+	lockExpiration := time.Minute * 30
 
 	_, err := c.AddFunc("@every 1m", func() {
 		// Intentar adquirir el bloqueo
@@ -226,8 +237,20 @@ func processEnqueuedRequests() {
 			continue
 		}
 
-		// Guardar la respuesta en Redis dentro del hash de respuestas
-		// Aquí asumimos que `response` ya está en el formato adecuado para ser almacenado directamente
+		//verificar la respuesta si se proceso o no exitosamente y no cambiarle el estatus
+		// Analizar la respuesta para determinar si se procesó correctamente
+		var responseObj map[string]interface{}
+		if err := json.Unmarshal(response, &responseObj); err != nil {
+			log.Printf("Error al deserializar la respuesta de la API: %v", err)
+			continue
+		}
+
+		// Verificar si la respuesta contiene el mensaje específico de error
+		if message, ok := responseObj["message"].(string); ok && message == "Ya existe una invalidación encolada para este DTE" {
+			// No marcar la petición como procesada y considerar reintentar o manejar de otra manera
+			fmt.Printf("La petición %s no se marcó como procesada debido a: %s\n", enqueuedRequest.ID, message)
+			continue
+		}
 		err = rdb.HSet(ctx, responsesHashKey, enqueuedRequest.ID, response).Err()
 		if err != nil {
 			log.Printf("Error al guardar la respuesta en Redis: %v", err)
