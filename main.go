@@ -50,12 +50,16 @@ func main() {
 		// Intentar acceder al objeto "Detalle" y luego al "CodigoGeneracion" dentro de él
 		detalle, ok := request["Detalle"].(map[string]interface{})
 		if !ok || detalle == nil {
+			//imprimir el error en consola
+			fmt.Println("Detalle missing or invalid")
+			fmt.Println(request)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Detalle missing or invalid"})
 			return
 		}
 		id, ok := detalle["CodigoGeneracion"].(string)
 		if !ok || id == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "CodigoGeneracion missing or invalid"})
+			fmt.Println("CodigoGeneracion missing or invalid")
 			return
 		}
 		exists, err := rdb.SIsMember(ctx, "codigosGeneracion", id).Result()
