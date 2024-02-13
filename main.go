@@ -48,15 +48,16 @@ func main() {
 		}
 
 		// Intentar acceder al objeto "Detalle" y luego al "CodigoGeneracion" dentro de él
-		detalle, ok := request["Detalle"].(map[string]interface{})
+		detalle, ok := request["detalle"].(map[string]interface{})
 		if !ok || detalle == nil {
-			//imprimir el error en consola
-			fmt.Println("Detalle missing or invalid")
+			// Imprimir el error en consola
+			fmt.Println("detalle missing or invalid")
 			fmt.Println(request)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Detalle missing or invalid"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "detalle missing or invalid"})
 			return
 		}
-		id, ok := detalle["CodigoGeneracion"].(string)
+
+		id, ok := detalle["codigoGeneracion"].(string)
 		if !ok || id == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "CodigoGeneracion missing or invalid"})
 			fmt.Println("CodigoGeneracion missing or invalid")
