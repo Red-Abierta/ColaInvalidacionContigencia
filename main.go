@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -256,12 +257,19 @@ func processEnqueuedRequests() {
 			continue
 		}
 
-		// Verificar si la respuesta contiene el mensaje específico de error
-		if message, ok := responseObj["message"].(string); ok && message == "Ya existe una invalidación encolada para este DTE" {
-			// No marcar la petición como procesada y considerar reintentar o manejar de otra manera
-			fmt.Printf("La petición %s no se marcó como procesada debido a: %s\n", enqueuedRequest.ID, message)
-			continue
+		// Verificar si la respuesta contiene alguno de los mensajes específicos de error
+		for _, key := range []string{"message", "Message"} {
+			if message, ok := responseObj[key].(string); ok {
+				// Comprueba si el mensaje contiene alguna de las frases clave
+				if strings.Contains(message, "Ya existe una invalidación encolada para este DTE") ||
+					strings.Contains(message, "Invalidacion encolada en contingencia") {
+					// Nota: Se ha quitado el código específico del mensaje de contingencia para hacer la comprobación más general
+					fmt.Printf("La petición %s no se marcó como procesada debido a: %s\n", enqueuedRequest.ID, message)
+					continue
+				}
+			}
 		}
+
 		err = rdb.HSet(ctx, responsesHashKey, enqueuedRequest.ID, response).Err()
 		if err != nil {
 			log.Printf("Error al guardar la respuesta en Redis: %v", err)
