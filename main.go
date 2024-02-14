@@ -373,23 +373,30 @@ func markRequestAsProcessed(id string) {
 }
 
 func getResponseStatus(id string) (bool, []byte, error) {
-	processed := isRequestProcessed(id)
-
-	if processed {
-		// Si la petición fue procesada, intenta recuperar la respuesta del hash de respuestas
-		response, err := rdb.HGet(ctx, responsesHashKey, id).Bytes()
-		if err == redis.Nil {
-			// La petición fue marcada como procesada, pero no hay respuesta almacenada en el hash.
-			// Esto podría indicar un problema o que la respuesta fue eliminada.
-			return true, nil, fmt.Errorf("la petición fue procesada pero no se encontró una respuesta")
-		} else if err != nil {
-			// Hubo un error al intentar recuperar la respuesta del hash
-			return true, nil, err
-		}
-		// Respuesta encontrada y recuperada exitosamente del hash
-		return true, response, nil
+	exists, err := rdb.HExists(ctx, responsesHashKey, id).Result()
+	if err != nil {
+		return false, nil, fmt.Errorf("error verificando el estado de la petición: %v", err)
 	}
 
-	// La petición no ha sido procesada aún o no se encontró en el conjunto de procesadas
-	return false, nil, nil
+	if !exists {
+		// La petición no ha sido procesada aún o no se encontró en el conjunto de procesadas
+		return false, nil, nil
+	}
+
+	// La petición ha sido procesada, intenta recuperar la respuesta del hash de respuestas
+	response, err := rdb.HGet(ctx, responsesHashKey, id).Bytes()
+	if err == redis.Nil {
+		// Caso inesperado: marcado como procesado pero no se encuentra en el hash
+		return true, nil, fmt.Errorf("inconsistencia de datos: petición marcada como procesada pero no se encuentra en el hash")
+	} else if err != nil {
+		return true, nil, err // Error al intentar recuperar la respuesta
+	}
+
+	if string(response) == "no_response" {
+		// La petición fue procesada pero no hay una respuesta específica almacenada
+		return true, nil, nil
+	}
+
+	// Respuesta encontrada y recuperada exitosamente del hash
+	return true, response, nil
 }
