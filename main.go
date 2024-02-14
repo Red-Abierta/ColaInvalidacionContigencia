@@ -216,7 +216,7 @@ func isAPIAvailable() bool {
 func processEnqueuedRequests() {
 	token, err := authenticateAndGetToken()
 	if err != nil {
-		log.Printf("Error al obtener el token: %v", err) // Cambiado a log.Printf para no detener la ejecución
+		log.Printf("Error al obtener el token: %v", err)
 		return
 	}
 
@@ -226,7 +226,7 @@ func processEnqueuedRequests() {
 			fmt.Println("No hay más peticiones en cola.")
 			break
 		} else if err != nil {
-			log.Printf("Error al desencolar: %v", err) // Cambiado a log.Printf para continuar el bucle
+			log.Printf("Error al desencolar: %v", err)
 			continue
 		}
 
@@ -236,45 +236,52 @@ func processEnqueuedRequests() {
 			continue
 		}
 
-		// Verificar si la petición ya ha sido procesada revisando directamente en el hash de respuestas
 		if isRequestProcessed(enqueuedRequest.ID) {
 			fmt.Printf("La petición %s ya ha sido procesada.\n", enqueuedRequest.ID)
 			continue
 		}
 
-		// Procesar la petición aquí...
 		response, err := sendEnqueuedRequest(enqueuedRequest.Request, token)
 		if err != nil {
 			log.Printf("Error al enviar la petición encolada: %v", err)
 			continue
 		}
 
-		//verificar la respuesta si se proceso o no exitosamente y no cambiarle el estatus
-		// Analizar la respuesta para determinar si se procesó correctamente
 		var responseObj map[string]interface{}
 		if err := json.Unmarshal(response, &responseObj); err != nil {
 			log.Printf("Error al deserializar la respuesta de la API: %v", err)
 			continue
 		}
 
-		// Verificar si la respuesta contiene alguno de los mensajes específicos de error
+		processedSuccessfully := true // Asumir éxito a menos que se determine lo contrario
 		for _, key := range []string{"message", "Message"} {
-			if message, ok := responseObj[key].(string); ok {
-				// Comprueba si el mensaje contiene alguna de las frases clave
-				if strings.Contains(message, "Ya existe una invalidación encolada para este DTE") ||
-					strings.Contains(message, "Invalidacion encolada en contingencia") {
-					// Nota: Se ha quitado el código específico del mensaje de contingencia para hacer la comprobación más general
-					fmt.Printf("La petición %s no se marcó como procesada debido a: %s\n", enqueuedRequest.ID, message)
-					continue
-				}
+			if message, ok := responseObj[key].(string); ok &&
+				(strings.Contains(message, "Ya existe una invalidación encolada para este DTE") ||
+					strings.Contains(message, "Invalidacion encolada en contingencia")) {
+				fmt.Printf("La petición %s no se marcó como procesada debido a: %s\n", enqueuedRequest.ID, message)
+				processedSuccessfully = false
+				break
 			}
 		}
 
-		err = rdb.HSet(ctx, responsesHashKey, enqueuedRequest.ID, response).Err()
+		// Crear objeto de respuesta para almacenar en Redis, incluyendo el estado de procesamiento
+		responseToStore := map[string]interface{}{
+			"response":              response,
+			"processedSuccessfully": processedSuccessfully,
+		}
+		responseBytes, err := json.Marshal(responseToStore)
+		if err != nil {
+			log.Printf("Error al serializar la respuesta y el estado: %v", err)
+			continue
+		}
+
+		err = rdb.HSet(ctx, responsesHashKey, enqueuedRequest.ID, responseBytes).Err()
 		if err != nil {
 			log.Printf("Error al guardar la respuesta en Redis: %v", err)
-		} else {
+		} else if processedSuccessfully {
 			fmt.Printf("Respuesta para la petición %s procesada y guardada en Redis con éxito.\n", enqueuedRequest.ID)
+		} else {
+			fmt.Printf("Respuesta para la petición %s guardada en Redis, pendiente de revisión.\n", enqueuedRequest.ID)
 		}
 	}
 }
@@ -373,30 +380,26 @@ func markRequestAsProcessed(id string) {
 }
 
 func getResponseStatus(id string) (bool, []byte, error) {
-	exists, err := rdb.HExists(ctx, responsesHashKey, id).Result()
-	if err != nil {
-		return false, nil, fmt.Errorf("error verificando el estado de la petición: %v", err)
-	}
-
-	if !exists {
-		// La petición no ha sido procesada aún o no se encontró en el conjunto de procesadas
-		return false, nil, nil
-	}
-
-	// La petición ha sido procesada, intenta recuperar la respuesta del hash de respuestas
-	response, err := rdb.HGet(ctx, responsesHashKey, id).Bytes()
+	rawData, err := rdb.HGet(ctx, responsesHashKey, id).Bytes()
 	if err == redis.Nil {
-		// Caso inesperado: marcado como procesado pero no se encuentra en el hash
-		return true, nil, fmt.Errorf("inconsistencia de datos: petición marcada como procesada pero no se encuentra en el hash")
+		// La petición no ha sido procesada aún o no se encontró en el hash.
+		return false, nil, fmt.Errorf("la petición no se ha procesado o no se encontró en el hash")
 	} else if err != nil {
-		return true, nil, err // Error al intentar recuperar la respuesta
+		// Hubo un error al intentar recuperar la data del hash.
+		return false, nil, err
 	}
 
-	if string(response) == "no_response" {
-		// La petición fue procesada pero no hay una respuesta específica almacenada
-		return true, nil, nil
+	// Deserializar la información almacenada para obtener tanto la respuesta como el estado de procesamiento.
+	var storedData struct {
+		Response              []byte `json:"response"`
+		ProcessedSuccessfully bool   `json:"processedSuccessfully"`
+	}
+	if err := json.Unmarshal(rawData, &storedData); err != nil {
+		// Hubo un error al deserializar la información almacenada.
+		return false, nil, fmt.Errorf("error al deserializar la respuesta almacenada: %v", err)
 	}
 
-	// Respuesta encontrada y recuperada exitosamente del hash
-	return true, response, nil
+	// Devolver el estado de procesamiento y la respuesta.
+	// Si `ProcessedSuccessfully` es falso, esto indica que la petición está pendiente o necesita revisión.
+	return storedData.ProcessedSuccessfully, storedData.Response, nil
 }
